@@ -390,8 +390,13 @@ NLP란 인간 언어(자연어)를 **컴퓨터가 이해하고 활용할 수 있
 ##### 데이터 흐름
 
 ```
-Positional Encoding → Multi-Head Attention → Feed-Forward Network
+Token Embedding + Positional Encoding
+    ↓
+[Transformer Block을 N번 반복]
+    Multi-Head Attention → Feed-Forward Network
 ```
+
+![transformer-block](./assets/transformer-Block.png)
 
 ##### Positional Encoding: 순서 정보 추가
 
@@ -450,13 +455,6 @@ Positional Encoding → Multi-Head Attention → Feed-Forward Network
 - 보통 임베딩 크기의 4배로 확장(768 → 3072)
 - 왜 4배? → 실험적으로 가장 성능 좋았음
 - 각 단어(토큰)마다 독립적으로 처리됨
-
-##### Encoder-Decoder 구조
-
-- **Encoder**: 여러 Block 쌓아 입력 토큰 전체의 문맥적 표현 생성
-- **Decoder**:
-  - 마스크된 self-attention을 사용해 이전 출력 토큰만 참조
-  - encoder 출력과 cross-attention을 수행하여 각 단계 예측에 활용
 
 ##### 안정적 학습을 위한 안전장치
 
