@@ -1,0 +1,36 @@
+# AI Basic Labs - 공통 Requirements
+
+# OpenAI
+openai>=1.0.0
+
+# 토큰화
+tiktoken>=0.5.0
+
+# 자연어 처리
+nltk>=3.8.0
+
+# 데이터 처리
+numpy>=1.24.0
+
+# 환경변수 관리
+python-dotenv>=1.0.0
+
+# Vector Database (Lab 02)
+chromadb>=0.4.0
+
+# RAG 시스템 (Lab 03)
+pdfplumber>=0.10.0     # PDF 파일 읽기 (한글 지원)
+beautifulsoup4>=4.12.0 # HTML 파싱
+markdown>=3.5.0        # Markdown 파싱
+
+# Advanced RAG (Lab 03 - Advanced)
+langchain>=0.1.0       # LangChain 프레임워크
+langchain-openai>=0.0.5 # LangChain OpenAI 통합
+langchain-community>=0.0.20 # LangChain 커뮤니티 통합
+langchain-text-splitters>=0.0.1 # LangChain 텍스트 분할
+rank-bm25>=0.2.2       # BM25 Sparse 검색
+sentence-transformers>=2.2.0 # 임베딩 및 리랭킹 모델
+faiss-cpu>=1.7.4       # FAISS 벡터 검색 (CPU 버전)
+
+# Agent 시스템 (Lab 04)
+pydantic>=2.0.0        # 구조화된 데이터 검증 (JSON 스키마)
