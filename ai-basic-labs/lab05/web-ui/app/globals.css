@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+/* Markdown 렌더링 스타일 */
+.markdown-content {
+  color: inherit;
+}
+
+.markdown-content * {
+  color: inherit;
+}

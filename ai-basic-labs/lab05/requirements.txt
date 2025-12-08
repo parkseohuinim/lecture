@@ -1,0 +1,30 @@
+# Core MCP Framework
+fastmcp>=2.0.0
+
+# Core FastAPI & Server
+fastapi>=0.105.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0
+python-dotenv>=1.0.0
+
+# HTTP & Async
+httpx>=0.25.0
+aiofiles>=23.0.0
+urllib3>=2.0.0
+
+# AI & LLM
+openai>=1.80.0
+tiktoken>=0.5.0
+numpy>=1.24.0
+
+# Web Scraping & HTML Processing
+beautifulsoup4>=4.12.0
+lxml>=5.3.0,<6.0.0
+markdownify>=0.12.6
+pymupdf4llm>=0.0.9
+trafilatura>=1.12.0
+
+# Utilities
+python-multipart>=0.0.6
+pyyaml>=6.0.0
