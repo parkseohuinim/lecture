@@ -77,3 +77,66 @@ class NavigationMenu(BaseModel):
     parent_page_id: Optional[str] = Field(None, description="부모 페이지 ID")
     root_pages: List[NavigationItem] = Field(default=[], description="최상위 페이지 목록")
     all_pages: List[NavigationItem] = Field(default=[], description="전체 페이지 목록 (계층 구조 포함)")
+
+
+# ============================================================================
+# RAG (문서 기반 질의응답) 모델
+# ============================================================================
+
+class RAGUploadResponse(BaseModel):
+    """문서 업로드 응답 모델"""
+    success: bool = Field(..., description="업로드 성공 여부")
+    doc_id: str = Field(..., description="문서 ID")
+    filename: str = Field(..., description="파일명")
+    file_type: str = Field(..., description="파일 타입")
+    total_chunks: int = Field(..., description="생성된 청크 수")
+    message: str = Field(..., description="결과 메시지")
+
+
+class RAGQueryRequest(BaseModel):
+    """RAG 질의 요청 모델"""
+    question: str = Field(..., description="질문")
+    k: int = Field(default=5, description="검색할 문서 수", ge=1, le=20)
+    search_method: str = Field(default="hybrid", description="검색 방법 (sparse, dense, hybrid)")
+    alpha: float = Field(default=0.5, description="하이브리드 검색 시 Dense 가중치", ge=0, le=1)
+    use_reranker: Optional[bool] = Field(default=None, description="Re-ranker 사용 여부")
+    doc_filter: Optional[str] = Field(default=None, description="특정 문서만 검색 (doc_id)")
+
+
+class RAGSourceInfo(BaseModel):
+    """RAG 출처 정보 모델"""
+    content: str = Field(..., description="출처 내용 (미리보기)")
+    score: float = Field(..., description="검색 점수")
+    rank: int = Field(..., description="순위")
+    filename: str = Field(..., description="파일명")
+    chunk_id: int = Field(..., description="청크 ID")
+
+
+class RAGQueryResponse(BaseModel):
+    """RAG 질의 응답 모델"""
+    success: bool = Field(..., description="성공 여부")
+    answer: str = Field(..., description="답변")
+    sources: List[RAGSourceInfo] = Field(default=[], description="출처 목록")
+    search_method: str = Field(..., description="사용된 검색 방법")
+    total_sources: int = Field(..., description="출처 수")
+    confidence: str = Field(..., description="신뢰도 (high, medium, low)")
+
+
+class RAGDocumentInfo(BaseModel):
+    """RAG 문서 정보 모델"""
+    doc_id: str = Field(..., description="문서 ID")
+    filename: str = Field(..., description="파일명")
+    file_type: str = Field(..., description="파일 타입")
+    total_chunks: int = Field(..., description="청크 수")
+    uploaded_at: str = Field(..., description="업로드 시간")
+    metadata: Dict[str, Any] = Field(default={}, description="추가 메타데이터")
+
+
+class RAGStatsResponse(BaseModel):
+    """RAG 통계 응답 모델"""
+    success: bool = Field(..., description="성공 여부")
+    collection_name: str = Field(..., description="컬렉션 이름")
+    total_documents: int = Field(..., description="총 문서 수")
+    total_chunks: int = Field(..., description="총 청크 수")
+    reranker_enabled: bool = Field(..., description="Re-ranker 활성화 여부")
+    document_list: List[str] = Field(default=[], description="문서 ID 목록")

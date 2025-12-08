@@ -356,6 +356,101 @@ Available tools:
         except Exception as e:
             logger.error(f"Failed to generate response: {e}")
             raise LLMQueryError(f"Failed to generate response: {str(e)}")
+    
+    async def generate_response_stream(
+        self, 
+        prompt: str,
+        system_prompt: Optional[str] = None
+    ) -> AsyncGenerator[str, None]:
+        """
+        토큰 단위 스트리밍 응답 생성 (ChatGPT 스타일)
+        Azure → OpenAI 자동 폴백 지원
+        
+        Args:
+            prompt: 사용자 프롬프트
+            system_prompt: 시스템 프롬프트 (선택)
+            
+        Yields:
+            토큰 단위 문자열
+        """
+        # 토큰 수 계산 및 제한 확인
+        tokens = self.tokenizer.encode(prompt)
+        token_count = len(tokens)
+        
+        max_tokens = 20000
+        if token_count > max_tokens:
+            logger.warning(f"Prompt too long ({token_count} tokens), truncating")
+            tokens = tokens[:max_tokens]
+            prompt = self.tokenizer.decode(tokens)
+        
+        logger.info(f"🌊 스트리밍 요청: {token_count} tokens")
+        
+        messages = [
+            {
+                "role": "system", 
+                "content": system_prompt or "당신은 도움이 되는 AI 어시스턴트입니다. 주어진 정보를 바탕으로 정확하고 유용한 답변을 제공합니다."
+            },
+            {"role": "user", "content": prompt}
+        ]
+        
+        # 1차 시도: Azure OpenAI (설정된 경우)
+        if self._azure_client and self.azure_available:
+            try:
+                logger.info(f"🔵 Azure OpenAI 스트리밍 시작: model={self.azure_model}")
+                stream = await self._azure_client.chat.completions.create(
+                    model=self.azure_model,
+                    messages=messages,
+                    max_tokens=2000,
+                    temperature=0.7,
+                    stream=True
+                )
+                
+                async for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+                
+                logger.info("✅ Azure OpenAI 스트리밍 완료")
+                return  # 성공 시 종료
+                
+            except Exception as azure_error:
+                error_msg = str(azure_error)
+                error_code = getattr(azure_error, 'status_code', None)
+                
+                if error_code == 403 or '403' in error_msg:
+                    logger.warning(f"⚠️ Azure OpenAI 403 Forbidden - 일반 OpenAI로 폴백")
+                elif 'timeout' in error_msg.lower() or 'connection' in error_msg.lower():
+                    logger.warning(f"⚠️ Azure OpenAI 연결 실패 - 일반 OpenAI로 폴백")
+                else:
+                    logger.error(f"❌ Azure OpenAI 스트리밍 오류: {error_msg[:200]}")
+                    raise LLMQueryError(f"스트리밍 응답 생성 실패: {error_msg}")
+                
+                self.azure_available = False
+        
+        # 2차 시도: 일반 OpenAI (폴백)
+        if self._openai_client:
+            try:
+                logger.info(f"🟢 일반 OpenAI 스트리밍 시작: model=gpt-4o-mini")
+                stream = await self._openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    max_tokens=2000,
+                    temperature=0.7,
+                    stream=True
+                )
+                
+                async for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+                
+                logger.info("✅ 일반 OpenAI 스트리밍 완료")
+                return
+                
+            except Exception as openai_error:
+                logger.error(f"❌ 일반 OpenAI 스트리밍 오류: {str(openai_error)[:200]}")
+                raise LLMQueryError(f"스트리밍 응답 생성 실패: {str(openai_error)}")
+        
+        # 사용 가능한 클라이언트가 없음
+        raise LLMQueryError("사용 가능한 LLM 클라이언트가 없습니다 (Azure, OpenAI 모두 실패)")
 
 # Global service instance
 llm_service = LLMService()

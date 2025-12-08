@@ -300,10 +300,10 @@ export function ConferenceMessage({ message }: ConferenceMessageProps) {
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{
-                    p: ({ node, ...props }) => <p className="text-sm text-gray-700 dark:text-gray-300 mb-2" {...props} />,
-                    ul: ({ node, ...props }) => <ul className="list-disc list-inside text-sm space-y-1" {...props} />,
-                    ol: ({ node, ...props }) => <ol className="list-decimal list-inside text-sm space-y-1" {...props} />,
-                    code: ({ node, inline, ...props }: any) => (
+                    p: ({ ...props }) => <p className="text-sm text-gray-700 dark:text-gray-300 mb-2" {...props} />,
+                    ul: ({ ...props }) => <ul className="list-disc list-inside text-sm space-y-1" {...props} />,
+                    ol: ({ ...props }) => <ol className="list-decimal list-inside text-sm space-y-1" {...props} />,
+                    code: ({ inline, ...props }: { inline?: boolean } & React.HTMLAttributes<HTMLElement>) => (
                       inline ? (
                         <code className="px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-600 font-mono text-xs" {...props} />
                       ) : (
@@ -311,24 +311,24 @@ export function ConferenceMessage({ message }: ConferenceMessageProps) {
                       )
                     ),
                     // 테이블 스타일링
-                    table: ({ node, ...props }) => (
+                    table: ({ ...props }) => (
                       <div className="overflow-x-auto my-3">
                         <table className="min-w-full text-xs border-collapse border border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden" {...props} />
                       </div>
                     ),
-                    thead: ({ node, ...props }) => (
+                    thead: ({ ...props }) => (
                       <thead className="bg-gray-100 dark:bg-gray-700" {...props} />
                     ),
-                    tbody: ({ node, ...props }) => (
+                    tbody: ({ ...props }) => (
                       <tbody className="divide-y divide-gray-200 dark:divide-gray-600" {...props} />
                     ),
-                    tr: ({ node, ...props }) => (
+                    tr: ({ ...props }) => (
                       <tr className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors" {...props} />
                     ),
-                    th: ({ node, ...props }) => (
+                    th: ({ ...props }) => (
                       <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-700" {...props} />
                     ),
-                    td: ({ node, ...props }) => (
+                    td: ({ ...props }) => (
                       <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600" {...props} />
                     ),
                   }}

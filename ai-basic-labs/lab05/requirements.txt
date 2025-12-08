@@ -31,6 +31,12 @@ markdownify>=0.12.6
 pymupdf4llm>=0.0.9
 trafilatura>=1.12.0
 
+# Vector DB & RAG
+chromadb>=0.4.0
+rank_bm25>=0.2.2
+sentence-transformers>=2.2.0
+
 # Utilities
 python-multipart>=0.0.6
 pyyaml>=6.0.0
+pdfplumber>=0.10.0

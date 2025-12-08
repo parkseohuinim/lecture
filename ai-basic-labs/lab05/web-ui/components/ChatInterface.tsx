@@ -48,51 +48,125 @@ export function ChatInterface() {
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
 
+    const assistantMessageId = (Date.now() + 1).toString();
+
     try {
-      // API 호출
-      const formData = new FormData();
-      formData.append('question', content);
-      
-      uploadedFiles.forEach(file => {
-        formData.append('files', file);
-      });
+      // 파일이 있으면 기존 방식 (MCP 도구 호출 필요)
+      if (uploadedFiles.length > 0) {
+        const formData = new FormData();
+        formData.append('question', content);
+        
+        uploadedFiles.forEach(file => {
+          formData.append('files', file);
+        });
 
-      const response = await fetch('http://localhost:8000/api/chat', {
-        method: 'POST',
-        body: formData
-      });
+        const response = await fetch('http://localhost:8000/api/chat', {
+          method: 'POST',
+          body: formData
+        });
 
-      if (!response.ok) {
-        throw new Error(`API 오류: ${response.statusText}`);
+        if (!response.ok) {
+          throw new Error(`API 오류: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+
+        const assistantMessage: Message = {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: data.answer || data.message || '응답 없음',
+          timestamp: new Date(),
+          toolsUsed: data.tools_used || [],
+          frontmatterFile: data.frontmatter_file
+        };
+
+        setMessages(prev => [...prev, assistantMessage]);
+        setUploadedFiles([]);
+      } else {
+        // 파일이 없으면 스트리밍 방식 (ChatGPT 스타일)
+        let streamedContent = '';
+
+        // 빈 어시스턴트 메시지 먼저 추가
+        setMessages(prev => [...prev, {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date()
+        }]);
+
+        const formData = new FormData();
+        formData.append('question', content);
+
+        const response = await fetch('http://localhost:8000/api/chat/stream', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          throw new Error('스트리밍 연결 실패');
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+
+        if (!reader) {
+          throw new Error('스트림 리더를 가져올 수 없습니다');
+        }
+
+        // SSE 스트림 읽기
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          const text = decoder.decode(value, { stream: true });
+          const lines = text.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+
+                if (data.type === 'token') {
+                  // 토큰 수신 - 타자치듯 추가
+                  streamedContent += data.data;
+                  
+                  setMessages(prev => prev.map(msg => 
+                    msg.id === assistantMessageId
+                      ? { ...msg, content: streamedContent }
+                      : msg
+                  ));
+                } else if (data.type === 'error') {
+                  throw new Error(data.data);
+                }
+              } catch (parseError) {
+                // JSON 파싱 실패 시 무시
+              }
+            }
+          }
+        }
       }
-
-      const data = await response.json();
-
-      // AI 응답 추가
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: data.answer || data.message || '응답 없음',
-        timestamp: new Date(),
-        toolsUsed: data.tools_used || [],
-        frontmatterFile: data.frontmatter_file
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
-      setUploadedFiles([]); // 파일 초기화
 
     } catch (error) {
       console.error('Error:', error);
       
-      // 에러 메시지 추가
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: `오류가 발생했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
-        timestamp: new Date()
-      };
-
-      setMessages(prev => [...prev, errorMessage]);
+      // 에러 메시지 처리
+      setMessages(prev => {
+        const hasEmptyAssistant = prev.some(msg => msg.id === assistantMessageId);
+        if (hasEmptyAssistant) {
+          return prev.map(msg => 
+            msg.id === assistantMessageId
+              ? { ...msg, content: `오류가 발생했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}` }
+              : msg
+          );
+        } else {
+          return [...prev, {
+            id: assistantMessageId,
+            role: 'assistant' as const,
+            content: `오류가 발생했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
+            timestamp: new Date()
+          }];
+        }
+      });
     } finally {
       setIsLoading(false);
     }

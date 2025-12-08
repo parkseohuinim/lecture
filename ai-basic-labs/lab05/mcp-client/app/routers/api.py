@@ -1,18 +1,25 @@
 """API routes for ARI Processing"""
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from typing import List, Optional
+from fastapi.responses import FileResponse, StreamingResponse
+from typing import List, Optional, AsyncGenerator
 import tempfile
 import os
 import logging
 from datetime import datetime
 import json
 import yaml
+import asyncio
 
-from app.models import HealthResponse, RagConfig, ProcessingMetadata, DocumentAnalysis, NavigationMenu, NavigationItem
+from app.models import (
+    HealthResponse, RagConfig, ProcessingMetadata, DocumentAnalysis, 
+    NavigationMenu, NavigationItem,
+    RAGUploadResponse, RAGQueryRequest, RAGQueryResponse, 
+    RAGDocumentInfo, RAGStatsResponse, RAGSourceInfo
+)
 from app.infrastructure.mcp.mcp_service import mcp_service
 from app.infrastructure.llm.llm_service import llm_service
 from app.application.conference.service import conference_service
+from app.application.rag.rag_service import get_rag_service
 
 logger = logging.getLogger(__name__)
 
@@ -815,4 +822,358 @@ async def run_conference(
     
     except Exception as e:
         logger.error(f"❌ 회의 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# RAG (문서 기반 질의응답) 엔드포인트
+# ============================================================================
+
+@router.post("/rag/upload", response_model=RAGUploadResponse, tags=["rag"])
+async def upload_document(
+    file: UploadFile = File(..., description="업로드할 문서 (PDF, MD, JSON, TXT)")
+):
+    """
+    문서 업로드 및 인덱싱
+    
+    **지원 파일 형식:**
+    - PDF (.pdf)
+    - Markdown (.md, .markdown)
+    - JSON (.json)
+    - Text (.txt, .text)
+    
+    **예시:**
+    ```bash
+    curl -X POST "http://localhost:8000/api/rag/upload" \
+      -F "file=@document.pdf"
+    ```
+    
+    **처리 과정:**
+    1. 파일 내용 추출 (PDF → 텍스트, JSON → 문자열 등)
+    2. 지능형 청킹 (문장/단락 경계 고려)
+    3. 하이브리드 인덱싱 (Vector DB + BM25)
+    """
+    try:
+        # 파일 형식 검증
+        filename = file.filename
+        extension = filename.lower().split('.')[-1] if '.' in filename else ''
+        
+        supported = {'pdf', 'md', 'markdown', 'json', 'txt', 'text'}
+        if extension not in supported:
+            raise HTTPException(
+                status_code=400,
+                detail=f"지원하지 않는 파일 형식: .{extension}. 지원 형식: {', '.join(supported)}"
+            )
+        
+        # 파일 내용 읽기
+        content = await file.read()
+        
+        # RAG 서비스로 처리
+        rag = get_rag_service()
+        doc_info = await rag.upload_document(content, filename)
+        
+        return RAGUploadResponse(
+            success=True,
+            doc_id=doc_info.doc_id,
+            filename=doc_info.filename,
+            file_type=doc_info.file_type,
+            total_chunks=doc_info.total_chunks,
+            message=f"문서 '{filename}'이 성공적으로 업로드되었습니다. ({doc_info.total_chunks}개 청크 생성)"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 문서 업로드 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rag/query", response_model=RAGQueryResponse, tags=["rag"])
+async def query_rag(request: RAGQueryRequest):
+    """
+    문서 기반 질의응답
+    
+    **검색 방법:**
+    - `sparse`: BM25 키워드 기반 검색
+    - `dense`: 벡터 유사도 기반 검색
+    - `hybrid`: Sparse + Dense 결합 (권장)
+    
+    **예시:**
+    ```bash
+    curl -X POST "http://localhost:8000/api/rag/query" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "question": "이 문서의 핵심 내용은 무엇인가요?",
+        "k": 5,
+        "search_method": "hybrid",
+        "alpha": 0.5
+      }'
+    ```
+    
+    **alpha 파라미터:**
+    - 0.0: 100% Sparse (키워드 완전 매칭)
+    - 0.5: 50/50 균형 (기본값)
+    - 1.0: 100% Dense (의미 기반)
+    
+    **팁:**
+    - 전문 용어/코드: alpha=0.3 (키워드 중심)
+    - 자연어 질문: alpha=0.7 (의미 중심)
+    """
+    try:
+        rag = get_rag_service()
+        
+        response = await rag.query(
+            question=request.question,
+            k=request.k,
+            search_method=request.search_method,
+            alpha=request.alpha,
+            use_reranker=request.use_reranker,
+            doc_filter=request.doc_filter
+        )
+        
+        # 출처 정보 변환
+        sources = [
+            RAGSourceInfo(
+                content=s["content"],
+                score=s["score"],
+                rank=s["rank"],
+                filename=s["filename"],
+                chunk_id=s["chunk_id"]
+            )
+            for s in response.sources
+        ]
+        
+        return RAGQueryResponse(
+            success=True,
+            answer=response.answer,
+            sources=sources,
+            search_method=response.search_method,
+            total_sources=response.total_sources,
+            confidence=response.confidence
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ RAG 질의 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rag/stream", tags=["rag"])
+async def query_rag_stream(request: RAGQueryRequest):
+    """
+    문서 기반 질의응답 (토큰 스트리밍, SSE)
+    
+    **ChatGPT 스타일 토큰 단위 스트리밍 응답**
+    
+    **SSE 이벤트 형식:**
+    - `sources`: 검색된 출처 정보 (답변 생성 전)
+    - `token`: 개별 토큰 (타자치듯 출력)
+    - `done`: 스트리밍 완료
+    - `error`: 오류 발생
+    
+    **예시 (JavaScript):**
+    ```javascript
+    const eventSource = new EventSource('/api/rag/stream?...');
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'token') {
+        // 토큰을 화면에 추가
+        appendText(data.data);
+      }
+    };
+    ```
+    
+    **fetch 사용 예시:**
+    ```javascript
+    const response = await fetch('/api/rag/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: '질문...' })
+    });
+    
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value);
+      // SSE 파싱 및 처리
+    }
+    ```
+    """
+    async def generate_sse():
+        try:
+            rag = get_rag_service()
+            
+            async for event in rag.query_stream(
+                question=request.question,
+                k=request.k,
+                search_method=request.search_method,
+                alpha=request.alpha,
+                use_reranker=request.use_reranker,
+                doc_filter=request.doc_filter
+            ):
+                # SSE 형식으로 변환
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                
+        except Exception as e:
+            logger.error(f"❌ RAG 스트리밍 실패: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'data': str(e)}, ensure_ascii=False)}\n\n"
+    
+    return StreamingResponse(
+        generate_sse(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Nginx 버퍼링 비활성화
+        }
+    )
+
+
+@router.post("/chat/stream", tags=["chat"])
+async def chat_stream(
+    question: str = Form(..., description="사용자 메시지")
+):
+    """
+    일반 채팅 (토큰 스트리밍, SSE)
+    
+    **ChatGPT 스타일 토큰 단위 스트리밍 응답**
+    
+    **SSE 이벤트 형식:**
+    - `token`: 개별 토큰 (타자치듯 출력)
+    - `done`: 스트리밍 완료
+    - `error`: 오류 발생
+    """
+    async def generate_sse():
+        try:
+            logger.info(f"🌊 채팅 스트리밍 시작: {question[:50]}...")
+            
+            async for token in llm_service.generate_response_stream(question):
+                yield f"data: {json.dumps({'type': 'token', 'data': token}, ensure_ascii=False)}\n\n"
+            
+            yield f"data: {json.dumps({'type': 'done', 'data': None}, ensure_ascii=False)}\n\n"
+            
+            logger.info("✅ 채팅 스트리밍 완료")
+            
+        except Exception as e:
+            logger.error(f"❌ 채팅 스트리밍 실패: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'data': str(e)}, ensure_ascii=False)}\n\n"
+    
+    return StreamingResponse(
+        generate_sse(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@router.get("/rag/documents", response_model=List[RAGDocumentInfo], tags=["rag"])
+async def list_documents():
+    """
+    업로드된 문서 목록 조회
+    
+    **예시:**
+    ```bash
+    curl -X GET "http://localhost:8000/api/rag/documents"
+    ```
+    """
+    try:
+        rag = get_rag_service()
+        documents = rag.list_documents()
+        
+        return [
+            RAGDocumentInfo(
+                doc_id=doc["doc_id"],
+                filename=doc["filename"],
+                file_type=doc["file_type"],
+                total_chunks=doc["total_chunks"],
+                uploaded_at=doc["uploaded_at"],
+                metadata=doc["metadata"]
+            )
+            for doc in documents
+        ]
+    
+    except Exception as e:
+        logger.error(f"❌ 문서 목록 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/rag/documents/{doc_id}", tags=["rag"])
+async def delete_document(doc_id: str):
+    """
+    문서 삭제
+    
+    **예시:**
+    ```bash
+    curl -X DELETE "http://localhost:8000/api/rag/documents/abc123"
+    ```
+    """
+    try:
+        rag = get_rag_service()
+        success = rag.delete_document(doc_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail=f"문서를 찾을 수 없습니다: {doc_id}")
+        
+        return {"success": True, "message": f"문서 '{doc_id}'가 삭제되었습니다."}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 문서 삭제 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/rag/documents", tags=["rag"])
+async def clear_all_documents():
+    """
+    모든 문서 삭제
+    
+    **주의:** 모든 인덱싱된 문서가 삭제됩니다!
+    
+    **예시:**
+    ```bash
+    curl -X DELETE "http://localhost:8000/api/rag/documents"
+    ```
+    """
+    try:
+        rag = get_rag_service()
+        rag.clear_all_documents()
+        
+        return {"success": True, "message": "모든 문서가 삭제되었습니다."}
+    
+    except Exception as e:
+        logger.error(f"❌ 전체 문서 삭제 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rag/stats", response_model=RAGStatsResponse, tags=["rag"])
+async def get_rag_stats():
+    """
+    RAG 시스템 통계 조회
+    
+    **예시:**
+    ```bash
+    curl -X GET "http://localhost:8000/api/rag/stats"
+    ```
+    """
+    try:
+        rag = get_rag_service()
+        stats = rag.get_stats()
+        
+        return RAGStatsResponse(
+            success=True,
+            collection_name=stats["collection_name"],
+            total_documents=stats["total_documents"],
+            total_chunks=stats.get("chroma_count", 0),
+            reranker_enabled=stats["reranker_enabled"],
+            document_list=stats["document_list"]
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ 통계 조회 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

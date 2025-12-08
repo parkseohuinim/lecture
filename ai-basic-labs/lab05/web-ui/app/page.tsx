@@ -3,8 +3,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { ChatInterface } from '@/components/ChatInterface';
 import { ConferenceRoom } from '@/components/ConferenceRoom';
+import { RAGChat } from '@/components/RAGChat';
 
-type Tab = 'chat' | 'conference';
+type Tab = 'chat' | 'rag' | 'conference';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
@@ -59,7 +60,7 @@ export default function Home() {
           <div className="glass rounded-2xl p-1 inline-flex space-x-1">
             <button
               onClick={() => setActiveTab('chat')}
-              className={`px-6 py-2.5 rounded-xl font-medium transition-all duration-200 ${
+              className={`px-5 py-2.5 rounded-xl font-medium transition-all duration-200 cursor-pointer ${
                 activeTab === 'chat'
                   ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg'
                   : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
@@ -73,8 +74,23 @@ export default function Home() {
               </div>
             </button>
             <button
+              onClick={() => setActiveTab('rag')}
+              className={`px-5 py-2.5 rounded-xl font-medium transition-all duration-200 cursor-pointer ${
+                activeTab === 'rag'
+                  ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-lg'
+                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+              }`}
+            >
+              <div className="flex items-center space-x-2">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                </svg>
+                <span>RAG</span>
+              </div>
+            </button>
+            <button
               onClick={() => setActiveTab('conference')}
-              className={`px-6 py-2.5 rounded-xl font-medium transition-all duration-200 ${
+              className={`px-5 py-2.5 rounded-xl font-medium transition-all duration-200 cursor-pointer ${
                 activeTab === 'conference'
                   ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg'
                   : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
@@ -92,6 +108,7 @@ export default function Home() {
 
         {/* Content */}
         {activeTab === 'chat' && <ChatInterface />}
+        {activeTab === 'rag' && <RAGChat />}
         {activeTab === 'conference' && <ConferenceRoom />}
       </div>
     </main>
