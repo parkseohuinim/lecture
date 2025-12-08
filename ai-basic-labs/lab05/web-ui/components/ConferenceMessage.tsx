@@ -37,6 +37,21 @@ export function ConferenceMessage({ message }: ConferenceMessageProps) {
     );
   }
 
+  // 회의 중지됨 메시지
+  if (message.type === 'conference_stopped') {
+    return (
+      <div className="flex items-center space-x-3 py-3 px-4 bg-orange-50 dark:bg-orange-900/20 rounded-xl border border-orange-200 dark:border-orange-800">
+        <svg className="w-5 h-5 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+        </svg>
+        <span className="text-sm font-medium text-orange-700 dark:text-orange-300">
+          회의가 중지되었습니다
+        </span>
+      </div>
+    );
+  }
+
   // 병렬 처리 시작 메시지
   if (message.type === 'parallel_start') {
     return (
@@ -238,6 +253,73 @@ export function ConferenceMessage({ message }: ConferenceMessageProps) {
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {message.content || ''}
               </ReactMarkdown>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 스트리밍 중인 에이전트 메시지 (ChatGPT 스타일 타이핑 효과)
+  if (message.type === 'agent_streaming' && message.node) {
+    const nodeDisplayName = getNodeDisplayName(message.node);
+    const nodeIcon = getNodeIcon(message.node);
+    const nodeColor = getNodeColor(message.node);
+
+    return (
+      <div className="group relative">
+        {/* 에이전트 아바타 */}
+        <div className="flex items-start space-x-3">
+          <div className={`flex-shrink-0 w-10 h-10 rounded-full ${nodeColor} flex items-center justify-center shadow-lg ring-2 ring-blue-400 ring-offset-2 dark:ring-offset-gray-800 animate-pulse`}>
+            <span className="text-lg">{nodeIcon}</span>
+          </div>
+
+          {/* 메시지 내용 */}
+          <div className="flex-1 min-w-0">
+            <div className="rounded-2xl p-4 shadow-sm border bg-gradient-to-br from-white to-blue-50 dark:from-gray-700 dark:to-blue-900/20 border-blue-200 dark:border-blue-700">
+              {/* 헤더 */}
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                    {nodeDisplayName}
+                  </span>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-100 dark:bg-blue-800/50 text-blue-600 dark:text-blue-300 rounded-full animate-pulse">
+                    ⚡ 생성 중...
+                  </span>
+                </div>
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {new Date().toLocaleTimeString('ko-KR', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                  })}
+                </span>
+              </div>
+
+              {/* 내용 (Markdown 렌더링 + 타이핑 커서) */}
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    p: ({ ...props }) => <p className="text-sm text-gray-700 dark:text-gray-300 mb-2" {...props} />,
+                    ul: ({ ...props }) => <ul className="list-disc list-inside text-sm space-y-1" {...props} />,
+                    ol: ({ ...props }) => <ol className="list-decimal list-inside text-sm space-y-1" {...props} />,
+                    code: ({ inline, ...props }: { inline?: boolean } & React.HTMLAttributes<HTMLElement>) => (
+                      inline ? (
+                        <code className="px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-600 font-mono text-xs" {...props} />
+                      ) : (
+                        <code className="block p-2 rounded-lg bg-gray-900 text-gray-100 overflow-x-auto font-mono text-xs my-2" {...props} />
+                      )
+                    ),
+                  }}
+                >
+                  {message.content || ''}
+                </ReactMarkdown>
+                {/* 타이핑 커서 */}
+                {message.isStreaming && (
+                  <span className="inline-block w-2 h-4 bg-blue-500 animate-pulse ml-0.5"></span>
+                )}
+              </div>
             </div>
           </div>
         </div>

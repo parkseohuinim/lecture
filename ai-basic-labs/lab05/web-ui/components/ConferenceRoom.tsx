@@ -29,6 +29,7 @@ export function ConferenceRoom() {
     isConnected, 
     isRunning, 
     startConference,
+    stopConference,  // 회의 중지 기능
     // HITL 전용
     hitlAwaitingInput,
     hitlRevisionCount,
@@ -38,6 +39,11 @@ export function ConferenceRoom() {
   
   // 스크롤 자동 이동을 위한 ref
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  
+  // 스마트 스크롤 상태
+  const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+  const prevMessageCountRef = useRef(0);
   
   // 현재 선택된 패턴의 메시지
   const messages = getMessages(selectedPattern);
@@ -110,12 +116,26 @@ export function ConferenceRoom() {
     }
   };
 
-  // 메시지가 추가될 때마다 스크롤 아래로 이동
+  // 사용자 스크롤 감지 - 맨 아래에서 벗어나면 자동 스크롤 비활성화
+  const handleScroll = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    
+    // 맨 아래에서 100px 이내면 "맨 아래"로 간주
+    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+    setIsUserScrolledUp(!isAtBottom);
+  };
+
+  // 스마트 스크롤: 사용자가 위로 스크롤하지 않았으면 항상 스크롤
+  // (병렬 노드는 스트리밍 비활성화되어 있으므로 토큰 스트리밍 시에도 스크롤해도 OK)
   useEffect(() => {
-    if (messages.length > 0) {
+    // 조건: 사용자가 위로 스크롤하지 않았고, 메시지가 있는 경우
+    if (!isUserScrolledUp && messages.length > 0) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+    
+    prevMessageCountRef.current = messages.length;
+  }, [messages, isUserScrolledUp]);
 
   const getDifficultyColor = (difficulty: string) => {
     switch (difficulty) {
@@ -176,8 +196,8 @@ export function ConferenceRoom() {
         continue;
       }
 
-      // 병렬 블록 내 메시지
-      if (isInParallelBlock && msg.type === 'agent_message') {
+      // 병렬 블록 내 메시지 (agent_message와 agent_streaming 모두 포함)
+      if (isInParallelBlock && (msg.type === 'agent_message' || msg.type === 'agent_streaming')) {
         parallelMessages.push(msg);
         continue;
       }
@@ -328,30 +348,35 @@ export function ConferenceRoom() {
 
       {/* 액션 버튼들 */}
       <div className="mb-6 flex space-x-3">
-        {/* 시작 버튼 */}
-        <button
-          onClick={handleStart}
-          disabled={isRunning || !topic.trim()}
-          className="flex-1 py-4 rounded-xl bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white font-semibold shadow-lg transform hover:scale-105 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-        >
+        {/* 시작/중지 버튼 */}
         {isRunning ? (
-          <div className="flex items-center justify-center space-x-2">
-            <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <span>회의 진행 중...</span>
-          </div>
+          <button
+            onClick={stopConference}
+            className="flex-1 py-4 rounded-xl bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white font-semibold shadow-lg transform hover:scale-105 transition-all duration-200"
+          >
+            <div className="flex items-center justify-center space-x-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+              </svg>
+              <span>회의 중지</span>
+            </div>
+          </button>
         ) : (
-          <div className="flex items-center justify-center space-x-2">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span>회의 시작</span>
-          </div>
+          <button
+            onClick={handleStart}
+            disabled={!topic.trim()}
+            className="flex-1 py-4 rounded-xl bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white font-semibold shadow-lg transform hover:scale-105 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+          >
+            <div className="flex items-center justify-center space-x-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>회의 시작</span>
+            </div>
+          </button>
         )}
-        </button>
 
         {/* 대화 내용 비우기 버튼 */}
         <button
@@ -374,7 +399,11 @@ export function ConferenceRoom() {
       </div>
 
       {/* 메시지 영역 */}
-      <div className="bg-white/50 dark:bg-gray-800/50 rounded-2xl p-4 min-h-[400px] max-h-[600px] overflow-y-auto backdrop-blur-sm border border-gray-200/50 dark:border-gray-700/50">
+      <div className="relative">
+      <div 
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="bg-white/50 dark:bg-gray-800/50 rounded-2xl p-4 min-h-[400px] max-h-[600px] overflow-y-auto backdrop-blur-sm border border-gray-200/50 dark:border-gray-700/50 scroll-smooth">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-12">
             <svg className="w-16 h-16 text-gray-400 dark:text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -479,6 +508,23 @@ export function ConferenceRoom() {
             <div ref={messagesEndRef} />
           </div>
         )}
+        
+        {/* 맨 아래로 이동 버튼 (사용자가 위로 스크롤했을 때만 표시) */}
+        {isUserScrolledUp && messages.length > 0 && (
+          <button
+            onClick={() => {
+              messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+              setIsUserScrolledUp(false);
+            }}
+            className="absolute bottom-4 right-4 p-3 rounded-full bg-blue-500 hover:bg-blue-600 text-white shadow-lg transform hover:scale-110 transition-all duration-200 z-10"
+            title="맨 아래로 이동"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+            </svg>
+          </button>
+        )}
+      </div>
       </div>
 
       {/* 연결 상태 */}

@@ -7,7 +7,7 @@ LangGraph Multi-Agent Patterns
 - Debate / Critic (토론·검증)
 - Swarm / Market-based (군집·경쟁)
 """
-from typing import TypedDict, Annotated, Sequence, List, Dict, Any, Optional
+from typing import TypedDict, Annotated, Sequence, List, Dict, Any, Optional, Callable, Awaitable
 from typing_extensions import TypedDict as TypedDictExt
 import operator
 import json
@@ -16,6 +16,12 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# 스트리밍 콜백 타입 정의
+# ============================================================================
+StreamCallback = Callable[[str, str], Awaitable[None]]  # (node_name, token) -> None
 
 
 # ============================================================================
@@ -160,20 +166,39 @@ class SequentialPattern:
     각 에이전트가 순차적으로 실행되며, 이전 결과를 다음 에이전트가 받아 처리
     """
     
-    def __init__(self, llm_service):
+    def __init__(self, llm_service, stream_callback: Optional[StreamCallback] = None):
         self.llm_service = llm_service
+        self.stream_callback = stream_callback
+    
+    def set_stream_callback(self, callback: Optional[StreamCallback]):
+        """스트리밍 콜백 설정"""
+        self.stream_callback = callback
+    
+    async def _generate_with_streaming(self, prompt: str, node_name: str) -> str:
+        """스트리밍 콜백이 있으면 토큰 단위로 스트리밍, 없으면 일반 생성"""
+        if self.stream_callback:
+            # 토큰 스트리밍 모드
+            content = ""
+            async for token in self.llm_service.generate_response_stream(prompt):
+                content += token
+                await self.stream_callback(node_name, token)
+            return content
+        else:
+            # 일반 모드
+            return await self.llm_service.generate_response(prompt)
     
     async def agent_summarizer(self, state: AgentState) -> AgentState:
         """Agent 1: 요약 전문가"""
         logger.info("🤖 [Agent 1: 요약 전문가] 시작")
         
-        summary = await self.llm_service.generate_response(
+        summary = await self._generate_with_streaming(
             f"""[역할: 요약 전문가]
             다음 주제를 간단명료하게 요약해주세요:
             
             주제: {state['topic']}
             
-            요약은 3-5문장으로 핵심만 추출하세요."""
+            요약은 3-5문장으로 핵심만 추출하세요.""",
+            "summarizer"
         )
         
         state['results']['summary'] = summary
@@ -189,7 +214,7 @@ class SequentialPattern:
         
         summary = state['results'].get('summary', '')
         
-        analysis = await self.llm_service.generate_response(
+        analysis = await self._generate_with_streaming(
             f"""[역할: 분석 전문가]
             다음 요약을 바탕으로 심층 분석을 수행해주세요:
             
@@ -199,7 +224,8 @@ class SequentialPattern:
             분석 항목:
             1. 핵심 개념
             2. 장단점
-            3. 실무 적용 가능성"""
+            3. 실무 적용 가능성""",
+            "analyzer"
         )
         
         state['results']['analysis'] = analysis
@@ -215,7 +241,7 @@ class SequentialPattern:
         
         analysis = state['results'].get('analysis', '')
         
-        validation = await self.llm_service.generate_response(
+        validation = await self._generate_with_streaming(
             f"""[역할: 검증 전문가]
             다음 분석 내용을 검증하고 최종 의견을 제시해주세요:
             
@@ -225,7 +251,8 @@ class SequentialPattern:
             검증 항목:
             1. 논리적 일관성
             2. 누락된 중요 사항
-            3. 최종 추천 사항"""
+            3. 최종 추천 사항""",
+            "validator"
         )
         
         state['results']['validation'] = validation
@@ -263,14 +290,30 @@ class PlannerExecutorPattern:
     Planner가 작업을 여러 단계로 나누고, Executor가 각 단계를 실행
     """
     
-    def __init__(self, llm_service):
+    def __init__(self, llm_service, stream_callback: Optional[StreamCallback] = None):
         self.llm_service = llm_service
+        self.stream_callback = stream_callback
+    
+    def set_stream_callback(self, callback: Optional[StreamCallback]):
+        """스트리밍 콜백 설정"""
+        self.stream_callback = callback
+    
+    async def _generate_with_streaming(self, prompt: str, node_name: str) -> str:
+        """스트리밍 콜백이 있으면 토큰 단위로 스트리밍, 없으면 일반 생성"""
+        if self.stream_callback:
+            content = ""
+            async for token in self.llm_service.generate_response_stream(prompt):
+                content += token
+                await self.stream_callback(node_name, token)
+            return content
+        else:
+            return await self.llm_service.generate_response(prompt)
     
     async def planner_node(self, state: PlannerState) -> PlannerState:
         """Planner: 작업을 단계별로 분해"""
         logger.info("📋 [Planner] 작업 분석 및 계획 수립 중...")
         
-        plan_response = await self.llm_service.generate_response(
+        plan_response = await self._generate_with_streaming(
             f"""[역할: Planner]
             다음 작업을 3-5개의 구체적인 단계로 나누어 계획을 수립해주세요.
             
@@ -285,7 +328,8 @@ class PlannerExecutorPattern:
               ]
             }}
             
-            JSON 형식으로만 응답하세요."""
+            JSON 형식으로만 응답하세요.""",
+            "planner"
         )
         
         # JSON 파싱
@@ -326,14 +370,15 @@ class PlannerExecutorPattern:
         step = state['plan'][current_idx]
         logger.info(f"⚙️ [Executor] Step {step['step']} 실행 중...")
         
-        execution_result = await self.llm_service.generate_response(
+        execution_result = await self._generate_with_streaming(
             f"""[역할: Executor]
             다음 작업을 수행해주세요:
             
             작업: {step['action']}
             전체 컨텍스트: {state['task']}
             
-            구체적이고 실행 가능한 결과를 제시하세요."""
+            구체적이고 실행 가능한 결과를 제시하세요.""",
+            "executor"
         )
         
         state['executions'].append({
@@ -363,7 +408,7 @@ class PlannerExecutorPattern:
             for ex in state['executions']
         ])
         
-        final_summary = await self.llm_service.generate_response(
+        final_summary = await self._generate_with_streaming(
             f"""[역할: Summarizer]
             다음 모든 실행 결과를 종합하여 최종 보고서를 작성해주세요:
             
@@ -375,7 +420,8 @@ class PlannerExecutorPattern:
             최종 보고서에는 다음을 포함하세요:
             1. 주요 달성 사항
             2. 핵심 인사이트
-            3. 다음 단계 제안"""
+            3. 다음 단계 제안""",
+            "summarizer_node"
         )
         
         state['final_result'] = final_summary
@@ -424,14 +470,30 @@ class RoleBasedPattern:
     ✨ 핵심: 병렬 실행으로 시간 절약, 독립적인 관점 보장
     """
     
-    def __init__(self, llm_service):
+    def __init__(self, llm_service, stream_callback: Optional[StreamCallback] = None):
         self.llm_service = llm_service
+        self.stream_callback = stream_callback
         self.roles = ["PM", "Developer", "Designer", "QA"]
+    
+    def set_stream_callback(self, callback: Optional[StreamCallback]):
+        """스트리밍 콜백 설정"""
+        self.stream_callback = callback
+    
+    async def _generate_with_streaming(self, prompt: str, node_name: str) -> str:
+        """스트리밍 콜백이 있으면 토큰 단위로 스트리밍, 없으면 일반 생성"""
+        if self.stream_callback:
+            content = ""
+            async for token in self.llm_service.generate_response_stream(prompt):
+                content += token
+                await self.stream_callback(node_name, token)
+            return content
+        else:
+            return await self.llm_service.generate_response(prompt)
     
     async def agent_pm(self, state: RoleBasedState) -> dict:
         """PM Agent - 독립적인 필드 업데이트"""
         logger.info("👔 [PM] 의견 제시 중...")
-        opinion = await self.llm_service.generate_response(
+        opinion = await self._generate_with_streaming(
             f"""[역할: Product Manager]
             다음 주제에 대해 PM 관점에서 의견을 제시해주세요:
             
@@ -440,7 +502,8 @@ class RoleBasedPattern:
             다음 사항을 포함하세요:
             1. 비즈니스 가치
             2. 우선순위
-            3. 리스크"""
+            3. 리스크""",
+            "pm"
         )
         logger.info("✅ [PM] 완료")
         return {
@@ -451,7 +514,7 @@ class RoleBasedPattern:
     async def agent_developer(self, state: RoleBasedState) -> dict:
         """Developer Agent - 독립적인 필드 업데이트"""
         logger.info("💻 [Developer] 의견 제시 중...")
-        opinion = await self.llm_service.generate_response(
+        opinion = await self._generate_with_streaming(
             f"""[역할: Developer]
             다음 주제에 대해 개발자 관점에서 의견을 제시해주세요:
             
@@ -460,7 +523,8 @@ class RoleBasedPattern:
             다음 사항을 포함하세요:
             1. 기술적 타당성
             2. 구현 복잡도
-            3. 유지보수성"""
+            3. 유지보수성""",
+            "developer"
         )
         logger.info("✅ [Developer] 완료")
         return {
@@ -471,7 +535,7 @@ class RoleBasedPattern:
     async def agent_designer(self, state: RoleBasedState) -> dict:
         """Designer Agent - 독립적인 필드 업데이트"""
         logger.info("🎨 [Designer] 의견 제시 중...")
-        opinion = await self.llm_service.generate_response(
+        opinion = await self._generate_with_streaming(
             f"""[역할: UX Designer]
             다음 주제에 대해 디자이너 관점에서 의견을 제시해주세요:
             
@@ -480,7 +544,8 @@ class RoleBasedPattern:
             다음 사항을 포함하세요:
             1. 사용자 경험
             2. 접근성
-            3. 디자인 일관성"""
+            3. 디자인 일관성""",
+            "designer"
         )
         logger.info("✅ [Designer] 완료")
         return {
@@ -491,7 +556,7 @@ class RoleBasedPattern:
     async def agent_qa(self, state: RoleBasedState) -> dict:
         """QA Agent - 독립적인 필드 업데이트"""
         logger.info("🔍 [QA] 의견 제시 중...")
-        opinion = await self.llm_service.generate_response(
+        opinion = await self._generate_with_streaming(
             f"""[역할: QA Engineer]
             다음 주제에 대해 QA 관점에서 의견을 제시해주세요:
             
@@ -500,7 +565,8 @@ class RoleBasedPattern:
             다음 사항을 포함하세요:
             1. 테스트 가능성
             2. 품질 리스크
-            3. 검증 전략"""
+            3. 검증 전략""",
+            "qa"
         )
         logger.info("✅ [QA] 완료")
         return {
@@ -519,7 +585,7 @@ class RoleBasedPattern:
             f"[QA의 의견]\n{state.get('qa_opinion', '(의견 없음)')}"
         ])
         
-        final_decision = await self.llm_service.generate_response(
+        final_decision = await self._generate_with_streaming(
             f"""[역할: Team Leader]
             팀원들의 의견을 종합하여 최종 결정을 내려주세요:
             
@@ -530,7 +596,8 @@ class RoleBasedPattern:
             최종 결정에는 다음을 포함하세요:
             1. 핵심 합의 사항
             2. 트레이드오프 분석
-            3. 실행 계획"""
+            3. 실행 계획""",
+            "leader"
         )
         
         logger.info("✅ [Team Leader] 완료")
@@ -580,15 +647,31 @@ class HierarchicalPattern:
     ✨ 핵심: 상하 구조, 병렬 작업 분산
     """
     
-    def __init__(self, llm_service):
+    def __init__(self, llm_service, stream_callback: Optional[StreamCallback] = None):
         self.llm_service = llm_service
+        self.stream_callback = stream_callback
         self.num_workers = 3
+    
+    def set_stream_callback(self, callback: Optional[StreamCallback]):
+        """스트리밍 콜백 설정"""
+        self.stream_callback = callback
+    
+    async def _generate_with_streaming(self, prompt: str, node_name: str) -> str:
+        """스트리밍 콜백이 있으면 토큰 단위로 스트리밍, 없으면 일반 생성"""
+        if self.stream_callback:
+            content = ""
+            async for token in self.llm_service.generate_response_stream(prompt):
+                content += token
+                await self.stream_callback(node_name, token)
+            return content
+        else:
+            return await self.llm_service.generate_response(prompt)
     
     async def manager_delegate(self, state: HierarchicalState) -> dict:
         """Manager: 작업 분배"""
         logger.info("👨‍💼 [Manager] 작업 분배 중...")
         
-        delegation_response = await self.llm_service.generate_response(
+        delegation_response = await self._generate_with_streaming(
             f"""[역할: Manager]
             다음 작업을 {self.num_workers}명의 워커에게 분배해주세요.
             각 워커에게 구체적이고 독립적인 작업을 할당하세요.
@@ -602,7 +685,8 @@ class HierarchicalPattern:
               "worker3": "구체적인 작업 설명"
             }}
             
-            JSON 형식으로만 응답하세요."""
+            JSON 형식으로만 응답하세요.""",
+            "manager_delegate"
         )
         
         # JSON 파싱
@@ -633,13 +717,14 @@ class HierarchicalPattern:
         assignment = state.get('assignments', {}).get('worker1', "작업 없음")
         logger.info(f"👷 [Worker 1] 작업 수행 중...")
         
-        result = await self.llm_service.generate_response(
+        result = await self._generate_with_streaming(
             f"""[역할: Worker 1]
             다음 작업을 수행해주세요:
             
             작업: {assignment}
             
-            구체적이고 실행 가능한 결과를 제시하세요."""
+            구체적이고 실행 가능한 결과를 제시하세요.""",
+            "worker1"
         )
         
         logger.info(f"✅ [Worker 1] 완료")
@@ -653,13 +738,14 @@ class HierarchicalPattern:
         assignment = state.get('assignments', {}).get('worker2', "작업 없음")
         logger.info(f"👷 [Worker 2] 작업 수행 중...")
         
-        result = await self.llm_service.generate_response(
+        result = await self._generate_with_streaming(
             f"""[역할: Worker 2]
             다음 작업을 수행해주세요:
             
             작업: {assignment}
             
-            구체적이고 실행 가능한 결과를 제시하세요."""
+            구체적이고 실행 가능한 결과를 제시하세요.""",
+            "worker2"
         )
         
         logger.info(f"✅ [Worker 2] 완료")
@@ -673,13 +759,14 @@ class HierarchicalPattern:
         assignment = state.get('assignments', {}).get('worker3', "작업 없음")
         logger.info(f"👷 [Worker 3] 작업 수행 중...")
         
-        result = await self.llm_service.generate_response(
+        result = await self._generate_with_streaming(
             f"""[역할: Worker 3]
             다음 작업을 수행해주세요:
             
             작업: {assignment}
             
-            구체적이고 실행 가능한 결과를 제시하세요."""
+            구체적이고 실행 가능한 결과를 제시하세요.""",
+            "worker3"
         )
         
         logger.info(f"✅ [Worker 3] 완료")
@@ -699,7 +786,7 @@ class HierarchicalPattern:
             f"Worker 3:\n작업: {assignments.get('worker3', '')}\n결과: {state.get('worker3_result', '')}"
         ])
         
-        final_report = await self.llm_service.generate_response(
+        final_report = await self._generate_with_streaming(
             f"""[역할: Manager]
             워커들의 결과를 통합하여 최종 보고서를 작성해주세요:
             
@@ -711,7 +798,8 @@ class HierarchicalPattern:
             최종 보고서에는 다음을 포함하세요:
             1. 전체 요약
             2. 주요 성과
-            3. 개선 제안"""
+            3. 개선 제안""",
+            "manager_integrate"
         )
         
         logger.info("✅ [Manager] 결과 통합 완료")
@@ -758,15 +846,31 @@ class DebatePattern:
     제안자와 비평가가 여러 라운드 토론 후 심판이 최종 결정
     """
     
-    def __init__(self, llm_service, max_rounds=3):
+    def __init__(self, llm_service, max_rounds=3, stream_callback: Optional[StreamCallback] = None):
         self.llm_service = llm_service
         self.max_rounds = max_rounds
+        self.stream_callback = stream_callback
+    
+    def set_stream_callback(self, callback: Optional[StreamCallback]):
+        """스트리밍 콜백 설정"""
+        self.stream_callback = callback
+    
+    async def _generate_with_streaming(self, prompt: str, node_name: str) -> str:
+        """스트리밍 콜백이 있으면 토큰 단위로 스트리밍, 없으면 일반 생성"""
+        if self.stream_callback:
+            content = ""
+            async for token in self.llm_service.generate_response_stream(prompt):
+                content += token
+                await self.stream_callback(node_name, token)
+            return content
+        else:
+            return await self.llm_service.generate_response(prompt)
     
     async def proposer_initial(self, state: DebateState) -> DebateState:
         """Proposer: 초기 제안"""
         logger.info("💡 [Proposer] 초기 제안 작성 중...")
         
-        proposal = await self.llm_service.generate_response(
+        proposal = await self._generate_with_streaming(
             f"""[역할: Proposer]
             다음 주제에 대한 제안을 작성해주세요:
             
@@ -775,7 +879,8 @@ class DebatePattern:
             제안서에 포함할 내용:
             1. 핵심 아이디어
             2. 기대 효과
-            3. 실행 방안"""
+            3. 실행 방안""",
+            "proposer_initial"
         )
         
         state['proposal'] = proposal
@@ -790,7 +895,7 @@ class DebatePattern:
         """Critic: 비판"""
         logger.info(f"🔍 [Critic] Round {state['round_num']} 비판 중...")
         
-        critique = await self.llm_service.generate_response(
+        critique = await self._generate_with_streaming(
             f"""[역할: Critic]
             다음 제안의 문제점을 날카롭게 지적해주세요:
             
@@ -800,7 +905,8 @@ class DebatePattern:
             비판 항목:
             1. 논리적 오류
             2. 실현 가능성 문제
-            3. 누락된 중요 사항"""
+            3. 누락된 중요 사항""",
+            "critic"
         )
         
         state['critique'] = critique
@@ -814,7 +920,7 @@ class DebatePattern:
         """Proposer: 제안 개선"""
         logger.info(f"💡 [Proposer] Round {state['round_num']} 제안 개선 중...")
         
-        refined_proposal = await self.llm_service.generate_response(
+        refined_proposal = await self._generate_with_streaming(
             f"""[역할: Proposer]
             비판을 반영하여 제안을 개선해주세요:
             
@@ -824,7 +930,8 @@ class DebatePattern:
             받은 비판:
             {state['critique']}
             
-            개선된 제안을 작성하세요."""
+            개선된 제안을 작성하세요.""",
+            "proposer_refine"
         )
         
         state['proposal'] = refined_proposal
@@ -850,7 +957,7 @@ class DebatePattern:
             for conv in state['conversation']
         ])
         
-        final_decision = await self.llm_service.generate_response(
+        final_decision = await self._generate_with_streaming(
             f"""[역할: Judge]
             다음 토론 내용을 바탕으로 최종 판결을 내려주세요:
             
@@ -862,7 +969,8 @@ class DebatePattern:
             최종 판결에 포함할 내용:
             1. 토론의 주요 쟁점
             2. 각 측의 강점과 약점
-            3. 최종 결정 및 근거"""
+            3. 최종 결정 및 근거""",
+            "judge"
         )
         
         state['final_decision'] = final_decision
@@ -968,9 +1076,25 @@ class SwarmPattern:
         }
     }
     
-    def __init__(self, llm_service, num_agents=5):
+    def __init__(self, llm_service, num_agents=5, stream_callback: Optional[StreamCallback] = None):
         self.llm_service = llm_service
         self.num_agents = min(num_agents, 5)
+        self.stream_callback = stream_callback
+    
+    def set_stream_callback(self, callback: Optional[StreamCallback]):
+        """스트리밍 콜백 설정"""
+        self.stream_callback = callback
+    
+    async def _generate_with_streaming(self, prompt: str, node_name: str) -> str:
+        """스트리밍 콜백이 있으면 토큰 단위로 스트리밍, 없으면 일반 생성"""
+        if self.stream_callback:
+            content = ""
+            async for token in self.llm_service.generate_response_stream(prompt):
+                content += token
+                await self.stream_callback(node_name, token)
+            return content
+        else:
+            return await self.llm_service.generate_response(prompt)
     
     async def agent1_node(self, state: SwarmAgentState) -> dict:
         """Agent 1: 비용 최적화 전문가"""
@@ -1037,7 +1161,7 @@ class SwarmPattern:
             
             JSON 형식으로만 응답하세요."""
 
-        proposal_response = await self.llm_service.generate_response(prompt)
+        proposal_response = await self._generate_with_streaming(prompt, f"agent{agent_id}")
         
         # JSON 파싱
         try:
@@ -1314,11 +1438,27 @@ class ReflectionPattern:
     - 또는 전체 Reflector 점수의 평균
     """
     
-    def __init__(self, llm_service, max_iterations=3, quality_threshold=8.0, improvement_threshold=0.3):
+    def __init__(self, llm_service, max_iterations=3, quality_threshold=8.0, improvement_threshold=0.3, stream_callback: Optional[StreamCallback] = None):
         self.llm_service = llm_service
         self.max_iterations = max_iterations
         self.quality_threshold = quality_threshold
         self.improvement_threshold = improvement_threshold  # 최소 개선폭
+        self.stream_callback = stream_callback
+    
+    def set_stream_callback(self, callback: Optional[StreamCallback]):
+        """스트리밍 콜백 설정"""
+        self.stream_callback = callback
+    
+    async def _generate_with_streaming(self, prompt: str, node_name: str) -> str:
+        """스트리밍 콜백이 있으면 토큰 단위로 스트리밍, 없으면 일반 생성"""
+        if self.stream_callback:
+            content = ""
+            async for token in self.llm_service.generate_response_stream(prompt):
+                content += token
+                await self.stream_callback(node_name, token)
+            return content
+        else:
+            return await self.llm_service.generate_response(prompt)
     
     async def generator_node(self, state: ReflectionState) -> dict:
         """Generator: 초안 생성 또는 피드백 반영 수정"""
@@ -1371,7 +1511,7 @@ Reflector 피드백:
 **반드시 피드백의 모든 개선 제안을 충실히 반영**하세요.
 이전보다 품질 점수가 확실히 올라갈 수 있도록 구체적인 개선을 적용하세요."""
         
-        draft = await self.llm_service.generate_response(prompt)
+        draft = await self._generate_with_streaming(prompt, "generator")
         
         logger.info(f"✅ [Generator] 완료 (Iteration {iteration + 1})")
         
@@ -1451,7 +1591,7 @@ Reflector 피드백:
 
 **반드시** 항목별 점수의 합계를 품질 점수로 기입하세요. 불일치하면 안 됩니다!"""
         
-        reflection = await self.llm_service.generate_response(prompt)
+        reflection = await self._generate_with_streaming(prompt, "reflector")
         
         import re
         
@@ -1771,8 +1911,24 @@ class RoutingPattern:
     # 선택 임계값 (이 이상이면 해당 전문가 선택 가능)
     SELECTION_THRESHOLD = 0.3
     
-    def __init__(self, llm_service):
+    def __init__(self, llm_service, stream_callback: Optional[StreamCallback] = None):
         self.llm_service = llm_service
+        self.stream_callback = stream_callback
+    
+    def set_stream_callback(self, callback: Optional[StreamCallback]):
+        """스트리밍 콜백 설정"""
+        self.stream_callback = callback
+    
+    async def _generate_with_streaming(self, prompt: str, node_name: str) -> str:
+        """스트리밍 콜백이 있으면 토큰 단위로 스트리밍, 없으면 일반 생성"""
+        if self.stream_callback:
+            content = ""
+            async for token in self.llm_service.generate_response_stream(prompt):
+                content += token
+                await self.stream_callback(node_name, token)
+            return content
+        else:
+            return await self.llm_service.generate_response(prompt)
     
     async def router_node(self, state: RoutingState) -> dict:
         """
@@ -1836,7 +1992,7 @@ class RoutingPattern:
 
 JSON 형식으로만 응답하세요."""
         
-        response = await self.llm_service.generate_response(prompt)
+        response = await self._generate_with_streaming(prompt, "router")
         
         # JSON 파싱
         import re
@@ -2024,7 +2180,7 @@ JSON 형식으로만 응답하세요."""
 
 전문 용어는 설명을 덧붙이고, 실무에서 바로 활용 가능한 답변을 제공하세요."""
         
-        response = await self.llm_service.generate_response(prompt)
+        response = await self._generate_with_streaming(prompt, agent_type)
         
         logger.info(f"✅ [{agent_info['name']}] 응답 완료")
         
@@ -2180,9 +2336,25 @@ class HITLPattern:
     종료   재생성  종료
     """
     
-    def __init__(self, llm_service, max_revisions=3):
+    def __init__(self, llm_service, max_revisions=3, stream_callback: Optional[StreamCallback] = None):
         self.llm_service = llm_service
         self.max_revisions = max_revisions
+        self.stream_callback = stream_callback
+    
+    def set_stream_callback(self, callback: Optional[StreamCallback]):
+        """스트리밍 콜백 설정"""
+        self.stream_callback = callback
+    
+    async def _generate_with_streaming(self, prompt: str, node_name: str) -> str:
+        """스트리밍 콜백이 있으면 토큰 단위로 스트리밍, 없으면 일반 생성"""
+        if self.stream_callback:
+            content = ""
+            async for token in self.llm_service.generate_response_stream(prompt):
+                content += token
+                await self.stream_callback(node_name, token)
+            return content
+        else:
+            return await self.llm_service.generate_response(prompt)
     
     async def proposal_generator(self, state: HITLState) -> dict:
         """Agent: 제안 생성 (피드백 반영 포함)"""
@@ -2256,7 +2428,7 @@ class HITLPattern:
 
 **개선된 제안서를 작성하세요:**"""
         
-        proposal = await self.llm_service.generate_response(prompt)
+        proposal = await self._generate_with_streaming(prompt, "proposal_generator")
         
         logger.info(f"✅ [Agent] 제안 완료 (수정 {revision_count}회)")
         
@@ -2457,8 +2629,8 @@ class HITLPattern:
 # Pattern Registry
 # ============================================================================
 
-def get_pattern(pattern_name: str, llm_service, **kwargs):
-    """패턴 팩토리"""
+def get_pattern(pattern_name: str, llm_service, stream_callback: Optional[StreamCallback] = None, **kwargs):
+    """패턴 팩토리 - 토큰 스트리밍 콜백 지원"""
     patterns = {
         "sequential": SequentialPattern,
         "planner_executor": PlannerExecutorPattern,
@@ -2475,20 +2647,21 @@ def get_pattern(pattern_name: str, llm_service, **kwargs):
     if not pattern_class:
         raise ValueError(f"Unknown pattern: {pattern_name}. Available: {list(patterns.keys())}")
     
-    # 패턴별 추가 인자 전달
+    # 패턴별 추가 인자 전달 + 스트리밍 콜백
     if pattern_name == "debate":
-        return pattern_class(llm_service, max_rounds=kwargs.get("max_rounds", 3))
+        return pattern_class(llm_service, max_rounds=kwargs.get("max_rounds", 3), stream_callback=stream_callback)
     elif pattern_name == "swarm":
-        return pattern_class(llm_service, num_agents=kwargs.get("num_agents", 5))
+        return pattern_class(llm_service, num_agents=kwargs.get("num_agents", 5), stream_callback=stream_callback)
     elif pattern_name == "reflection":
         return pattern_class(
             llm_service, 
             max_iterations=kwargs.get("max_iterations", 3),
             quality_threshold=kwargs.get("quality_threshold", 8.0),
-            improvement_threshold=kwargs.get("improvement_threshold", 0.3)
+            improvement_threshold=kwargs.get("improvement_threshold", 0.3),
+            stream_callback=stream_callback
         )
     elif pattern_name == "hitl":
-        return pattern_class(llm_service, max_revisions=kwargs.get("max_revisions", 3))
+        return pattern_class(llm_service, max_revisions=kwargs.get("max_revisions", 3), stream_callback=stream_callback)
     else:
-        return pattern_class(llm_service)
+        return pattern_class(llm_service, stream_callback=stream_callback)
 

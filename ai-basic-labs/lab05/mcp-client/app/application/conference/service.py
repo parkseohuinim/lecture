@@ -63,8 +63,14 @@ class ConferenceService:
         try:
             logger.info(f"🎯 회의 시작: pattern={pattern}, topic={topic}")
             
-            # 패턴 인스턴스 생성
-            pattern_instance = get_pattern(pattern, self.llm_service, **kwargs)
+            # 스트리밍 콜백 생성 (WebSocket이 있을 경우)
+            # 병렬 패턴은 병렬 노드에서 스트리밍 비활성화
+            stream_callback = None
+            if websocket:
+                stream_callback = self._create_stream_callback(websocket, pattern)
+            
+            # 패턴 인스턴스 생성 (스트리밍 콜백 전달)
+            pattern_instance = get_pattern(pattern, self.llm_service, stream_callback=stream_callback, **kwargs)
             
             # LangGraph 워크플로우 생성
             workflow = pattern_instance.create_graph()
@@ -74,7 +80,7 @@ class ConferenceService:
             
             # WebSocket 연결이 있으면 스트리밍
             if websocket:
-                return await self._run_with_streaming(workflow, initial_state, pattern, websocket)
+                return await self._run_with_streaming(workflow, initial_state, pattern, websocket, pattern_instance)
             else:
                 # 일반 실행
                 return await self._run_without_streaming(workflow, initial_state, pattern)
@@ -82,6 +88,34 @@ class ConferenceService:
         except Exception as e:
             logger.error(f"❌ 회의 실행 실패: {e}", exc_info=True)
             raise
+    
+    def _create_stream_callback(self, websocket: WebSocket, pattern: str = None):
+        """
+        WebSocket을 통해 토큰을 전송하는 스트리밍 콜백 생성
+        
+        병렬 노드(role_based, hierarchical, swarm의 동시 실행 노드)는 
+        스트리밍을 비활성화하여 뒤섞임 방지
+        """
+        # 병렬 노드 목록 수집
+        parallel_nodes = set()
+        if pattern and pattern in self.PARALLEL_GROUPS:
+            parallel_nodes = set(self.PARALLEL_GROUPS[pattern]["parallel_nodes"])
+        
+        async def stream_callback(node_name: str, token: str):
+            # 병렬 노드는 스트리밍 비활성화 (뒤섞임 방지)
+            if node_name in parallel_nodes:
+                return  # 토큰 전송하지 않음 - 완성된 메시지만 표시
+            
+            try:
+                await websocket.send_json({
+                    "type": "agent_token",
+                    "node": node_name,
+                    "token": token,
+                    "status": "streaming"
+                })
+            except Exception as e:
+                logger.error(f"❌ 토큰 스트리밍 전송 실패: {e}")
+        return stream_callback
     
     def _prepare_initial_state(self, pattern: str, topic: str, **kwargs) -> Dict[str, Any]:
         """패턴별 초기 상태 준비"""
@@ -221,9 +255,10 @@ class ConferenceService:
         workflow,
         initial_state: Dict[str, Any],
         pattern: str,
-        websocket: WebSocket
+        websocket: WebSocket,
+        pattern_instance=None
     ) -> Dict[str, Any]:
-        """WebSocket 스트리밍과 함께 실행"""
+        """WebSocket 스트리밍과 함께 실행 (토큰 단위 스트리밍 지원)"""
         
         try:
             # 병렬 그룹 정보 가져오기
@@ -236,11 +271,15 @@ class ConferenceService:
             parallel_started = False
             completed_parallel_nodes = set()
             
+            # 현재 스트리밍 중인 노드 추적
+            streaming_nodes = set()
+            
             # 시작 알림
             await websocket.send_json({
                 "type": "conference_start",
                 "pattern": pattern,
-                "status": "started"
+                "status": "started",
+                "token_streaming_enabled": True  # 토큰 스트리밍 활성화 알림
             })
             
             final_state = None
@@ -250,6 +289,16 @@ class ConferenceService:
                 # 이벤트 처리
                 for node_name, node_output in event.items():
                     logger.info(f"📡 노드 완료: {node_name}")
+                    
+                    # 스트리밍이 완료된 노드임을 표시
+                    if node_name in streaming_nodes:
+                        # 스트리밍 완료 이벤트 전송
+                        await websocket.send_json({
+                            "type": "agent_stream_end",
+                            "node": node_name,
+                            "status": "stream_completed"
+                        })
+                        streaming_nodes.discard(node_name)
                     
                     # 병렬 노드인 경우 처리
                     if parallel_info and node_name in parallel_nodes:
@@ -277,7 +326,7 @@ class ConferenceService:
                         # 병렬 노드인지 여부 표시
                         is_parallel = node_name in parallel_nodes if parallel_info else False
                         
-                        # WebSocket으로 전송
+                        # WebSocket으로 전송 (최종 메시지 - 스트리밍이 이미 완료된 상태)
                         await websocket.send_json({
                             "type": "agent_message",
                             "node": node_name,
@@ -560,8 +609,13 @@ class ConferenceService:
         
         logger.info(f"🚀 [HITL] 세션 시작: {session_id}")
         
-        # 패턴 인스턴스 생성
-        pattern_instance = get_pattern("hitl", self.llm_service, **kwargs)
+        # 스트리밍 콜백 생성 (WebSocket이 있을 경우)
+        stream_callback = None
+        if websocket:
+            stream_callback = self._create_stream_callback(websocket, "hitl")
+        
+        # 패턴 인스턴스 생성 (스트리밍 콜백 전달)
+        pattern_instance = get_pattern("hitl", self.llm_service, stream_callback=stream_callback, **kwargs)
         workflow = pattern_instance.create_graph()
         
         # 초기 상태 준비
